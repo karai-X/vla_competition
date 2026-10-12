@@ -5,7 +5,7 @@ LIBERO のロボット操作タスクを、背景・照明・カメラ視点・�
 
 このリポジトリには、その解説ページと、学習・推論パイプラインから抜粋したコードが入っています。
 
-**解説ページ：[`portfolio/index.html`](portfolio/index.html)**（GitHub Pages で公開。ローカルでの開き方は[下記](#解説ページをローカルで開く)）
+**解説ページ：https://karai-x.github.io/vla_competition/**
 
 ---
 
