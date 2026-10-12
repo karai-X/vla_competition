@@ -1,0 +1,17 @@
+[project]
+name = "vla-finetuning-notes"
+version = "0.1.0"
+description = "Excerpts of an OpenVLA-OFT+ fine-tuning / PPO pipeline for collision-free LIBERO manipulation under perturbations"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.4",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]

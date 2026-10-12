@@ -1,0 +1,30 @@
+{
+  "config_id": "parc_proxy_score_v1",
+  "official_score": false,
+  "metrics_version": "eef_initial_and_post_action_20hz_v1",
+  "weights": {
+    "time": 0.2,
+    "jerk": 0.2,
+    "sparc": 0.2,
+    "trajectory": 0.2,
+    "rotation": 0.2
+  },
+  "weight_sensitivity_bounds": [
+    0.1,
+    0.3
+  ],
+  "normalization": "reference_over_reference_plus_cost",
+  "reference_costs": {
+    "time": 136.0,
+    "jerk": 6.149240402312195,
+    "sparc": 2.174999993016122,
+    "trajectory": 0.9940455638055308,
+    "rotation": 1.0737022565878496
+  },
+  "max_environment_steps": 300,
+  "control_dt": 0.05,
+  "weight_reason": "No metric is known to dominate, so use equal prior weights and report the 10-30% sensitivity range",
+  "normalization_reason": "Each fixed reference cost scores0.5; lower cost tends toward1; no model-specific refitting",
+  "reference_scope": "Common physical scales from 181 safe LIBERO demonstrations (median of 57 eligible task medians), applied unchanged to every evaluation set",
+  "precision": "Reference EEF poses reconstructed from saved float32 position/rotation-vector state; future rollouts store observed float64 poses"
+}

@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+# Never commit model weights, datasets, rollouts or submissions
+*.safetensors
+*.pt
+*.bin
+*.hdf5
+*.h5
+*.npz
+*.zip
+*.mp4
+runs/
+artifacts/
+data/

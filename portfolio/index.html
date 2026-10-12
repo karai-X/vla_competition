@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLA Fine-tuning Notes</title>
+<meta name="description" content="LIBERO-Plusで学習済みのOpenVLA-OFTをファインチューニングし、摂動が加わったLIBEROのタスクを周りの物体に衝突せずに解けるようにした記録。">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="top__inner">
+    <div class="brand">VLA Fine-tuning Notes<small>LIBERO / OpenVLA-OFT</small></div>
+    <button class="theme" id="theme" type="button" aria-label="表示テーマを切り替える">テーマ: 自動</button>
+    <nav class="nav" id="nav" aria-label="セクション">
+      <a href="#overview">概要</a>
+      <a href="#model">モデル</a>
+      <a href="#data">データ</a>
+      <a href="#lessons">失敗から得た知見</a>
+      <a href="#code">コード</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================================ 概要 -->
+<section class="section" id="view-overview">
+  <p class="eyebrow">OVERVIEW</p>
+  <h1 class="page-title">摂動が加わっても、ぶつけずに解く</h1>
+  <p class="lead">
+    LIBERO のロボット操作タスクを、背景・照明・カメラ視点・物体配置・ロボット初期姿勢・センサノイズといった<b>摂動が加わった状態でも、
+    周りの物体に衝突せずに</b>解けるようにすることを目標に、LIBERO-Plus で学習済みの VLA <b>OpenVLA-OFT</b>（7B）を、自前で生成したデータでファインチューニングしました。
+    ここでは、その実装の抜粋と、試行錯誤から得た知見をまとめています。
+  </p>
+
+  <div class="grid grid--3">
+    <div class="card stat">
+      <span class="stat__label">背景・照明の摂動</span>
+      <span class="stat__value">90% → 99%</span>
+      <span class="stat__sub">タスク成功率。ファインチューニングなし → あり（100件）</span>
+    </div>
+    <div class="card stat">
+      <span class="stat__label">視点・配置・初期姿勢・ノイズの摂動</span>
+      <span class="stat__value">80% → 84%</span>
+      <span class="stat__sub">タスク成功率。ファインチューニングなし → あり（100件）</span>
+    </div>
+    <div class="card stat">
+      <span class="stat__label">学習データ</span>
+      <span class="stat__value">5,830</span>
+      <span class="stat__sub">エピソード。公開データ＋独自生成・品質改善</span>
+    </div>
+  </div>
+
+  <h2 class="head">ファインチューニングなしとの比較</h2>
+  <p class="prose">
+    ベースにした学習済みモデル <code>Sylvest/openvla-7b-oft-finetuned-libero-plus-mixdata</code> をそのまま動かした場合と、
+    ファインチューニング後のモデル（追加学習 計25,000更新）を、LIBERO シミュレータの<b>同じシナリオ・同じ評価手順</b>で比べました。
+    衝突は「操作対象以外の物体を1mm超動かしたら衝突」と定義しています。
+  </p>
+  <div class="card">
+    <div class="legend" aria-hidden="true">
+      <span><i style="background:var(--series-base)"></i>ファインチューニングなし</span>
+      <span><i style="background:var(--series-1)"></i>ファインチューニング後</span>
+    </div>
+    <div class="grid grid--2" style="gap:8px 28px">
+      <div>
+        <h3 style="margin:4px 0 2px">タスク成功率</h3>
+        <div class="chart" data-chart="task" role="img" aria-label="タスク成功率。背景・照明の摂動でファインチューニングなし90%、後99%。視点・配置・初期姿勢・ノイズの摂動でなし80%、後84%。"></div>
+      </div>
+      <div>
+        <h3 style="margin:4px 0 2px">衝突なし成功率</h3>
+        <div class="chart" data-chart="cf" role="img" aria-label="衝突なし成功率。背景・照明の摂動でファインチューニングなし64%、後70%。視点・配置・初期姿勢・ノイズの摂動でなし52%、後60%。"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>評価セット</th><th>モデル</th><th class="num">タスク成功</th><th class="num">衝突なし成功</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3">背景・照明の摂動<br><span class="note">30タスク・100件</span></td><td>ファインチューニングなし</td><td class="num">90 / 100</td><td class="num">64 / 100</td></tr>
+        <tr><td>追加10,000更新</td><td class="num">96 / 100</td><td class="num">67 / 100</td></tr>
+        <tr class="hl"><td>追加25,000更新</td><td class="num"><b>99 / 100</b></td><td class="num"><b>70 / 100</b></td></tr>
+        <tr><td rowspan="3">視点・配置・初期姿勢・ノイズの摂動<br><span class="note">30タスク・100件</span></td><td>ファインチューニングなし</td><td class="num">80 / 100</td><td class="num">52 / 100</td></tr>
+        <tr><td>追加10,000更新</td><td class="num">76 / 100</td><td class="num">53 / 100</td></tr>
+        <tr class="hl"><td>追加25,000更新</td><td class="num"><b>84 / 100</b></td><td class="num"><b>60 / 100</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="prose note">
+    <p>
+      対象は LIBERO の spatial / object / goal の30タスク。最大300ステップ、128px入力、8ステップ予測・8ステップ実行、評価seed固定。
+      シナリオは全モデルで同一で、エピソードごとに対応がとれています。背景・照明の摂動では、ファインチューニングなしで失敗し、後で成功したシナリオが10件、逆が1件でした。
+    </p>
+  </div>
+
+  <h2 class="head">やったこと</h2>
+  <div class="grid grid--2">
+    <div class="card">
+      <h3>モデル</h3>
+      <ul>
+        <li>LIBERO-Plus で学習済みの OpenVLA-OFT に LoRA rank 32 を追加し、Action head と proprio projector を学習（<a href="#model">ベースモデル</a>）</li>
+        <li>直前3 Actionの履歴入力を、<b>ゼロ初期化した分岐</b>で既存のproprioトークンへ加算（元の出力を壊さずに拡張）</li>
+        <li>8-step × 7次元のAction chunkを予測し、実行長は1/4/8を比較して決定</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>データ</h3>
+      <ul>
+        <li>LIBERO シミュレータで、物体配置・初期姿勢・カメラ・照明・センサノイズを摂動した<b>成功かつ衝突なしの軌道を生成</b></li>
+        <li>同じ初期状態のまま軌道を短縮・平滑化し、<b>指標の重みをどう置いても悪化しない</b>改変だけ採用する品質ゲートを設計</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ モデル -->
+<section class="section" id="view-model" hidden>
+  <p class="eyebrow">MODEL</p>
+  <h1 class="page-title">摂動に強いモデルを、さらに衝突しない方向へ</h1>
+  <p class="lead">
+    ベースには、Hugging Face で公開されている <code>Sylvest/openvla-7b-oft-finetuned-libero-plus-mixdata</code>（revision <code>a85655e</code>に固定）を使いました。
+    OpenVLA を LIBERO 向けに改良した OpenVLA-OFT を、さらに摂動つきのデモで追加学習したモデルです。
+  </p>
+
+  <h2 class="head">ベースモデルの成り立ち</h2>
+  <div class="flow">
+    <div class="flow__step"><b>1. OpenVLA</b><span>Llama 2 7Bベースの VLA。<span class="nw">約97万軌道</span>でロボットのActionを学習</span></div>
+    <div class="flow__arrow">→</div>
+    <div class="flow__step"><b>2. OpenVLA-OFT</b><span>LIBERO の4つのタスク群のデモで、連続値のAction chunkを出すように適応</span></div>
+    <div class="flow__arrow">→</div>
+    <div class="flow__step"><b>3. LIBERO-Plus で追加学習</b><span>背景・照明・視点・ノイズなどの摂動を加えたデモでさらに学習（今回のベース）</span></div>
+    <div class="flow__arrow">→</div>
+    <div class="flow__step"><b>4. 今回のファインチューニング</b><span>摂動を加えた成功かつ衝突なしの軌道で LoRA を追加学習</span></div>
+  </div>
+
+  <h3>1. OpenVLA：画像と言語を読む7Bのモデルに、Actionを「単語」として出させる</h3>
+  <div class="prose">
+    <p>
+      OpenVLA は、画像と言語を理解する視覚言語モデル（VLM）を、ロボットの操作データでさらに学習させた <span class="nw">7B パラメータ</span>のモデルです。
+      土台にしている VLM は <span class="nw">Prismatic-7B</span> で、次の3つの部品からできています。
+    </p>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <svg class="diagram" viewBox="0 0 960 216" role="img" aria-label="OpenVLAの構造。224pxのカメラ画像をDINOv2とSigLIPの2つの画像エンコーダで特徴に変換して連結し、MLPプロジェクタでLlama 2の入力に合わせる。言語指示と合わせてLlama 2 7Bに入力し、7個のActionトークンを1つずつ出力し、それぞれを連続値に戻す。">
+      <rect class="box" x="10" y="30" width="150" height="56" rx="8"/>
+      <text x="22" y="54">カメラ画像 1枚</text><text class="sub" x="22" y="74">224 × 224</text>
+      <rect class="box" x="200" y="10" width="190" height="46" rx="8"/>
+      <text x="212" y="30">DINOv2 ViT-L/14</text><text class="sub" x="212" y="47">形や位置関係に強い特徴</text>
+      <rect class="box" x="200" y="64" width="190" height="46" rx="8"/>
+      <text x="212" y="84">SigLIP So400m/14</text><text class="sub" x="212" y="101">言語と対応づいた意味の特徴</text>
+      <rect class="box" x="430" y="30" width="150" height="56" rx="8"/>
+      <text x="442" y="54">MLP プロジェクタ</text><text class="sub" x="442" y="74">2つを連結して変換</text>
+      <rect class="box" x="10" y="150" width="150" height="56" rx="8"/>
+      <text x="22" y="174">言語指示</text><text class="sub" x="22" y="194">プロンプトとして入力</text>
+      <rect class="box" x="620" y="80" width="150" height="80" rx="8"/>
+      <text x="632" y="106">Llama 2 7B</text><text class="sub" x="632" y="126">言語モデル（LLM）</text><text class="sub" x="632" y="144">自己回帰で生成</text>
+      <rect class="box" x="810" y="80" width="140" height="80" rx="8"/>
+      <text x="822" y="106">Actionトークン</text><text class="sub" x="822" y="126">7個を1つずつ</text><text class="sub" x="822" y="144">→ 連続値に戻す</text>
+      <path class="wire" d="M160 58 H180 V33 H200"/><path class="wire" d="M180 58 V87 H200"/>
+      <path class="wire" d="M390 33 H410 V58 H430"/><path class="wire" d="M390 87 H410 V58"/>
+      <path class="wire" d="M580 58 H600 V105 H620"/>
+      <path class="wire" d="M160 178 H600 V135 H620"/>
+      <path class="wire" d="M770 120 H810"/>
+    </svg>
+  </div>
+  <div class="grid grid--3">
+    <div class="card">
+      <h3>画像エンコーダ</h3>
+      <p><b>DINOv2</b>（自己教師あり学習。物体の形や空間的な位置関係をよく捉える）と <b>SigLIP</b>（画像と言語の対応で学習。物体の意味を捉える）の2つを並列に使い、パッチごとの特徴を連結します。ロボット操作では「何があるか」と「どこにあるか」の両方が要るためです。</p>
+    </div>
+    <div class="card">
+      <h3>言語モデル</h3>
+      <p><b>Llama 2 7B</b>。画像の特徴は MLP プロジェクタで Llama 2 の単語埋め込みと同じ空間へ変換され、言語指示のトークンと一緒に並べて入力されます。
+      Prismatic の段階で、画像とテキストの対話データで学習済みです。</p>
+    </div>
+    <div class="card">
+      <h3>Actionの出し方</h3>
+      <p>手先の移動量・回転量・グリッパの7次元を、それぞれ<b>256段階に区切って離散トークン</b>にします（Llama の語彙のうち使われにくい256個を流用）。
+      モデルは文章を書くのと同じように、7個のトークンを1つずつ生成し、それを連続値に戻してロボットへ送ります。</p>
+    </div>
+  </div>
+  <div class="prose">
+    <p>
+      この VLM を、さまざまなロボット・タスクを集めた <b>Open X-Embodiment の<span class="nw">約97万軌道</span></b>で学習したのが OpenVLA です。
+      画像エンコーダも含めてモデル全体を更新しています。
+    </p>
+  </div>
+
+  <h3>2. OpenVLA-OFT：Actionの出し方を、ロボット向けに作り直す</h3>
+  <div class="prose">
+    <p>
+      OpenVLA の「1トークンずつ生成する」出し方は、1ステップ分のActionを出すのにLLMを7回動かす必要があり、遅く、細かい連続値も表しにくい。
+      OpenVLA-OFT（Optimized Fine-Tuning）は、モデル本体はそのままに、入出力と学習の仕方を次のように変えます。
+    </p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>OpenVLA</th><th>OpenVLA-OFT</th></tr></thead>
+      <tbody>
+        <tr><td>入力</td><td>カメラ画像1枚 ＋ 言語指示</td><td>正面＋手首の<b>画像2枚</b> ＋ 言語指示 ＋ <b>proprio</b>（ロボットの関節・手先の状態）</td></tr>
+        <tr><td>出力</td><td>1ステップ分（7個の離散トークン）</td><td><b>8ステップ分 × 7次元の連続値</b>（Action chunk）</td></tr>
+        <tr><td>生成の仕方</td><td>自己回帰で1トークンずつ（7回）</td><td>空の入力を並べ、<b>1回の推論で全部を並列に</b>出力</td></tr>
+        <tr><td>出力層</td><td>LLMの語彙（言語モデルのヘッド）</td><td>LLMの隠れ状態から連続値を出す <b>MLPのAction head</b></td></tr>
+        <tr><td>損失</td><td>トークンの交差エントロピー</td><td>連続値の <b>L1 誤差</b></td></tr>
+        <tr><td>学習方法</td><td>全パラメータ</td><td>LoRA（rank 32）＋ Action head ＋ proprio projector</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">
+    今回使ったモデルは、この方法で LIBERO の Spatial / Object / Goal / Long の4タスク群を1つのモデルとして学習したものが元になっています。
+  </p>
+
+  <h3>3. LIBERO-Plus で追加学習</h3>
+  <p class="prose">
+    LIBERO-Plus は、元の LIBERO のデモを背景・照明・カメラ視点・言語の言い換え・センサノイズ・妨害物などを変えた環境で再生し、成功したものを集めたデータです。
+    2 の OFT モデルを、このデータで追加学習したのが今回のベースです。配布物に含まれる統計では 14,347 軌道・<span class="nw">約224万ステップ</span>・40タスク。
+  </p>
+
+  <h2 class="head">ベースに足りなかったもの</h2>
+  <div class="prose">
+    <p>ベースは既に摂動に強く、背景・照明の摂動を加えた100件のうち90件を成功させます。それでも、次の点は学習の対象になっていませんでした。</p>
+    <ul>
+      <li><b>ロボットの初期姿勢の変化</b>：LIBERO-Plus は評価には初期姿勢の摂動を含みますが、学習データには入っていません</li>
+      <li><b>周りの物体との接触</b>：元のデモは「タスクを達成したか」で集められており、非対象物体を動かしたり擦ったりした軌道も含みます</li>
+      <li><b>新しい物体の追加や、無関係な物体の大きな移動</b>：対象の周りが混み合った配置</li>
+    </ul>
+    <p>そこで、これらの摂動を加えた状態で<b>成功し、かつ非対象物体を動かさない</b>軌道を生成し、それを教師にしてファインチューニングしました（<a href="#data">データ</a>）。</p>
+  </div>
+  <p class="note">
+    モデル名の「OFT+」は LIBERO-Plus で追加学習したことを指します。
+    出典：<a href="https://openvla.github.io/">OpenVLA</a>、<a href="https://openvla-oft.github.io/">OpenVLA-OFT</a>、<a href="https://arxiv.org/abs/2510.13626">LIBERO-Plus</a>、<a href="https://huggingface.co/Sylvest/openvla-7b-oft-finetuned-libero-plus-mixdata">モデルカード</a>。
+  </p>
+
+  <h2 class="head">構成</h2>
+  <div class="card">
+    <svg class="diagram" viewBox="0 0 960 300" role="img" aria-label="モデル構成図。front/wrist画像はvision backboneへ、言語指示はLLMへ、proprioと直前3 Actionはprojectorへ入り、LLMの隠れ状態からL1 action headが8×7のAction chunkを出力する。">
+      <rect class="box" x="10" y="20" width="170" height="56" rx="8"/>
+      <text x="22" y="44">front / wrist 画像</text><text class="sub" x="22" y="64">128px RGB ×2</text>
+      <rect class="box" x="10" y="122" width="170" height="56" rx="8"/>
+      <text x="22" y="146">言語指示</text><text class="sub" x="22" y="166">エピソード開始時に固定</text>
+      <rect class="box" x="10" y="224" width="170" height="56" rx="8"/>
+      <text x="22" y="248">proprio 8次元</text><text class="sub" x="22" y="268">＋直前3 Action（追加）</text>
+
+      <rect class="box box--train" x="430" y="20" width="170" height="56" rx="8"/>
+      <text x="442" y="44">Vision backbone</text><text class="sub" x="442" y="64">凍結 ＋ LoRA</text>
+      <rect class="box box--train" x="430" y="224" width="170" height="56" rx="8"/>
+      <text x="442" y="248">Proprio projector</text><text class="sub" x="442" y="268">履歴分岐はゼロ初期化</text>
+
+      <rect class="box box--train" x="640" y="100" width="150" height="100" rx="8"/>
+      <text x="652" y="128">LLM（7B）</text><text class="sub" x="652" y="150">凍結 ＋ LoRA r32</text><text class="sub" x="652" y="170">Attention / MLP 全線形層</text>
+      <rect class="box box--train" x="820" y="100" width="130" height="100" rx="8"/>
+      <text x="832" y="128">L1 Action head</text><text class="sub" x="832" y="150">全パラメータ学習</text><text class="sub" x="832" y="170">→ 8 × 7 chunk</text>
+
+      <path class="wire" d="M180 48 H430"/>
+      <path class="wire" d="M600 48 H615 V120 H640"/>
+      <path class="wire" d="M180 150 H640"/>
+      <path class="wire" d="M180 252 H430"/><path class="wire" d="M600 252 H615 V180 H640"/>
+      <path class="wire" d="M790 150 H820"/>
+    </svg>
+    <p class="note" style="margin:8px 0 0">青枠が今回の学習対象。ベースの重みは凍結し、LoRA・Action head・proprio projectorを学習。出力は [dx, dy, dz, droll, dpitch, dyaw, gripper] の7次元×8ステップ。</p>
+  </div>
+
+  <h2 class="head">推論経路で決めたこと</h2>
+  <div class="grid grid--2">
+    <div class="card">
+      <h3>前処理は1つの関数だけ</h3>
+      <p>LIBEROのカメラ画像は上下左右が反転しているため、<b>front / wrist の両方を180°回転</b>してからモデルへ渡します。
+      回転・リサイズ・補間を学習ローダと推論サーバで別々に実装すると必ずずれるので、
+      <code>prepare_libero_camera()</code> を共有し、角に目印を置いた非対称画像をゴールデンテストにしました。</p>
+    </div>
+    <div class="card">
+      <h3>gripperの符号規約を境界で変換</h3>
+      <p>LIBERO生データは <code>-1=開 / +1=閉</code>、OFTの教師は <code>0=閉 / 1=開</code>。
+      ローダの境界で <code>g_oft = (1 - g_libero) / 2</code> と変換し、出力時に逆変換します。データ版ごとに規約を宣言させ、宣言のないデータは読み込みません。</p>
+    </div>
+    <div class="card">
+      <h3>8本予測して、何本実行するか</h3>
+      <p>モデルは常に8ステップ分を予測し、実行長だけを1 / 4 / 8で比較しました。背景・照明の摂動100件でのタスク成功は、実行長1で74件、4で87件、8で96件。
+      再観測を増やせば修正が効くとは限らず、8ステップをまとめて実行するほうが安定していました。</p>
+    </div>
+    <div class="card">
+      <h3>正規化統計を確実にモデルへ渡す</h3>
+      <p>Action の正規化統計は全タスク共通の1つに固定し、指示文やタスク名で切り替えません。
+      LoRA で包んだモデルでは外側に設定した統計が内側の推論関数から見えないことがあり、内側のモデルへ直接渡して一致を検査するようにしました。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ データ -->
+<section class="section" id="view-data" hidden>
+  <p class="eyebrow">DATA</p>
+  <h1 class="page-title">「成功した軌道」は、そのまま教師にしない</h1>
+  <p class="lead">
+    VLAの性能はほぼデータで決まります。量を増やすより、<b>どの軌道を教えるか</b>に時間を使いました。
+    すべてのデータ版はIDとmanifestで管理し、元データは上書きせず新しい版として作り直しています。
+  </p>
+
+  <h2 class="head">学習データ</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>枠</th><th class="num">エピソード</th><th class="num">抽出比率</th><th>中身</th></tr></thead>
+      <tbody>
+        <tr><td>標準LIBERO成功デモ</td><td class="num">1,040</td><td class="num">30%</td><td>30タスクの公開デモ。同じ初期状態のまま軌道を短縮・平滑化した改善版を含む</td></tr>
+        <tr><td>独自生成＋画像変動</td><td class="num">1,148</td><td class="num">40%</td><td>物体の個別分散と新規物体、ロボット初期姿勢、実カメラ視点、照明、ノイズ5方式を摂動して生成した成功軌道</td></tr>
+        <tr><td>robustness / recovery</td><td class="num">3,642</td><td class="num">30%</td><td>公開データセット（失敗からの復帰を含む）と、摂動を加えた独自の復帰軌道480本</td></tr>
+        <tr class="hl"><td><b>合計</b></td><td class="num"><b>5,830</b></td><td class="num">100%</td><td>validation 129 / test 144 はエピソード単位で分離。split間の初期状態・軌道の重複0を監査</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">
+    サンプラは「データ源 → タスク → エピソード」の順に階層的に抽出します。エピソード数に比例させると、本数の多いタスクや少数タスクに偏った摂動データへ学習が寄って、元からできていたタスクを忘れるためです。
+    故意に失敗させた区間は <code>action_loss_mask=0</code> にし、その後の<b>立て直しのActionだけ</b>を教師にしています。
+  </p>
+
+  <h2 class="head">生成した摂動</h2>
+  <p class="prose">
+    LIBERO シミュレータの中で摂動を加えた初期状態を作り、そこから成功し、かつ非対象物体を動かさない軌道を生成しました。
+    下の画像はすべて学習データの最初のフレーム（正面カメラ、128px）です。
+  </p>
+  <div class="pert-grid">
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/layout_before.webp" alt="物体の分散配置＋新規物体：変更前" loading="lazy"><span>変更前</span></div>
+        <div><img src="materials/perturb/layout_after.webp" alt="物体の分散配置＋新規物体：変更後" loading="lazy"><span>変更後</span></div>
+      </div>
+      <figcaption><b>物体の分散配置＋新規物体</b>：無関係な既存物体をそれぞれ別の場所へ移し、衝突判定を持つ新しい物体を追加（この例では2個を机の上で大きく移動し、3個を追加）。対象物・置き先・指示文が参照する物体は動かさない。</figcaption>
+    </figure>
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/robot_before.webp" alt="ロボット初期姿勢：元の姿勢（手首）" loading="lazy"><span>元の姿勢（手首）</span></div>
+        <div><img src="materials/perturb/robot_after.webp" alt="ロボット初期姿勢：変更後（手首）" loading="lazy"><span>変更後（手首）</span></div>
+      </div>
+      <figcaption><b>ロボット初期姿勢</b>：手先の位置を2cm以上ずらした状態から開始。正面からは差が小さいため、手首カメラの画像で比較。</figcaption>
+    </figure>
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/camera1_before.webp" alt="カメラ視点：変更前" loading="lazy"><span>変更前</span></div>
+        <div><img src="materials/perturb/camera1_after.webp" alt="カメラ視点：変更後" loading="lazy"><span>変更後</span></div>
+      </div>
+      <figcaption><b>カメラ視点</b>：シミュレータ上のカメラの位置・向き自体を変更（画像の幾何変換ではない）。</figcaption>
+    </figure>
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/camera2_before.webp" alt="カメラ視点（別のシーン）：変更前" loading="lazy"><span>変更前</span></div>
+        <div><img src="materials/perturb/camera2_after.webp" alt="カメラ視点（別のシーン）：変更後" loading="lazy"><span>変更後</span></div>
+      </div>
+      <figcaption><b>カメラ視点（別のシーン）</b>：机の配置が異なるシーンでの例。</figcaption>
+    </figure>
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/light1_before.webp" alt="照明：変更前" loading="lazy"><span>変更前</span></div>
+        <div><img src="materials/perturb/light1_after.webp" alt="照明：変更後" loading="lazy"><span>変更後</span></div>
+      </div>
+      <figcaption><b>照明</b>：明るさ・環境光・色温度を変更。この例では物体の配置変更も同時に入っている。</figcaption>
+    </figure>
+    <figure class="pert">
+      <div class="pert__imgs">
+        <div><img src="materials/perturb/light2_before.webp" alt="照明（別のシーン）：変更前" loading="lazy"><span>変更前</span></div>
+        <div><img src="materials/perturb/light2_after.webp" alt="照明（別のシーン）：変更後" loading="lazy"><span>変更後</span></div>
+      </div>
+      <figcaption><b>照明（別のシーン）</b>：暖色寄りに変更した例。新しい物体（緑の箱）も追加されている。</figcaption>
+    </figure>
+    <figure class="pert pert--wide">
+      <div class="pert__imgs pert__imgs--3">
+        <div><img src="materials/perturb/zoom_parent.webp" alt="画像のズーム：元" loading="lazy"><span>元</span></div>
+        <div><img src="materials/perturb/zoom_in.webp" alt="画像のズーム：1.10倍" loading="lazy"><span>1.10倍</span></div>
+        <div><img src="materials/perturb/zoom_out.webp" alt="画像のズーム：0.90倍" loading="lazy"><span>0.90倍</span></div>
+      </div>
+      <figcaption><b>画像のズーム</b>：画像の中心を固定して±10%拡大・縮小。ロボットの動きは元と同じで、見え方だけを変える。</figcaption>
+    </figure>
+  </div>
+
+  <h3>センサノイズ（5方式）</h3>
+  <figure class="pert pert--noise">
+    <div class="pert__imgs pert__imgs--5">
+      <div><img src="materials/perturb/noise_motion.webp" alt="センサノイズ：motion blur" loading="lazy"><span>motion blur</span></div>
+      <div><img src="materials/perturb/noise_gaussian.webp" alt="センサノイズ：gaussian blur" loading="lazy"><span>gaussian blur</span></div>
+      <div><img src="materials/perturb/noise_zoom.webp" alt="センサノイズ：zoom blur" loading="lazy"><span>zoom blur</span></div>
+      <div><img src="materials/perturb/noise_fog.webp" alt="センサノイズ：fog" loading="lazy"><span>fog</span></div>
+      <div><img src="materials/perturb/noise_glass.webp" alt="センサノイズ：glass blur" loading="lazy"><span>glass blur</span></div>
+    </div>
+    <figcaption>カメラ画像にかかるぼけ・かすみを模した5方式。強さはエピソードごとにランダムに選び、エピソード全体に同じ設定でかける（画像は各方式で強めの例）。</figcaption>
+  </figure>
+
+  <div class="card" style="margin-top:18px">
+    <ul>
+      <li><b>復帰</b>：上の摂動に加え、途中で故意に手先をずらした後、成功まで立て直す連続軌道も生成（ずらした区間は教師から除外）</li>
+    </ul>
+    <p class="note" style="margin:0">採用条件：保存したActionを独立に再生して成功・全ステップで非対象物体の変位1mm以下・280ステップ以内・学習ローダで全フレームをdecodeできること。</p>
+  </div>
+
+  <h2 class="head">指標の重みをどう置いても悪化しない軌道改善</h2>
+  <div class="prose">
+    <p>
+      成功して衝突しないことに加えて、<b>短く・滑らかに</b>動く軌道を教えたい。ただ、ステップ数・jerk・SPARC（滑らかさ）・手先の経路長・回転量のどれをどれだけ重視すべきかは一意に決まりません。
+      そこで、同じ初期状態・同じシーンのまま、待機区間の削除・リタイミング・平滑化などの候補を物理実行し、次をすべて満たす改変だけを採用しました。
+    </p>
+    <ol>
+      <li>成功し、全20Hzステップで非対象物体の変位が1mm以下</li>
+      <li>280物理ステップ以内（評価上限300に余裕を持たせる）</li>
+      <li>5指標それぞれを <code>ref / (ref + cost)</code> で正規化し、<b>各重みを10〜30%（総和1）で動かした最悪ケースでも</b>改善量が 1e-4 を超える</li>
+      <li>保存したActionを別プロセスで再生しても同じ結果になる</li>
+    </ol>
+    <p>
+      最悪ケースの重みは線形計画の端点なので、指標の改善量を並べ替えて貪欲に割り当てるだけで求まります（<code>weight_extreme()</code>）。
+    </p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>同じ初期状態のまま改善した54本の平均</th><th class="num">改善前</th><th class="num">改善後</th></tr></thead>
+      <tbody>
+        <tr><td>物理ステップ数</td><td class="num">121.2</td><td class="num">114.5</td></tr>
+        <tr><td>jerk RMS（m/s³）</td><td class="num">7.62</td><td class="num">6.94</td></tr>
+        <tr><td>SPARCコスト（小さいほど滑らか）</td><td class="num">2.279</td><td class="num">2.225</td></tr>
+        <tr><td>手先の経路長（m）</td><td class="num">0.830</td><td class="num">0.815</td></tr>
+        <tr><td>手先の回転量（rad）</td><td class="num">1.291</td><td class="num">1.196</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================================ 知見 -->
+<section class="section" id="view-lessons" hidden>
+  <p class="eyebrow">LESSONS</p>
+  <h1 class="page-title">失敗から得た知見</h1>
+  <p class="lead">
+    うまくいったことより、うまくいかなかった理由のほうが再利用できます。
+    観測した事実と、そこから下した判断を分けて書いています。
+  </p>
+
+  <div class="grid grid--2">
+
+    <article class="card lesson">
+      <div class="lesson__n">01 · 推論経路</div>
+      <h3>まずファインチューニングなしのモデルで、成功率が出ることを確かめる</h3>
+      <dl>
+        <dt>観測</dt><dd>自作の推論サーバに画像の<b>180°回転が入っておらず</b>、それまでの評価値が無効になった。正しい前処理で測り直すと、validation lossが下がり続けていたrunは元のモデルより悪かった（成功33/130、元は49/130）。</dd>
+        <dt>判断</dt><dd>新しい推論経路を使う前に、公開重みをそのまま通して非ゼロの成功率を確認するゲートを必須にした。前処理のバージョンが記録されていない評価値はモデル比較に使わない。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">02 · データ規約</div>
+      <h3>gripperの符号とloss maskは、ファイルにあるだけでは効いていない</h3>
+      <dl>
+        <dt>観測</dt><dd>生成データのgripperがLIBERO規約（−1=開）のまま、OFT規約（0=閉）のデータと混ざっていた。さらに失敗区間のmaskがlossまで伝播しておらず、故意の失敗Actionまで教師にしていた。</dd>
+        <dt>判断</dt><dd>その学習runは棄却。データ設定にgripper規約を必須項目として宣言させ、値域とmask付きlossを単体テストと実batchのshapeで確認するようにした。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">03 · 学習率</div>
+      <h3>強いモデルへの追加学習は、学習率が既存能力の保持を決める</h3>
+      <dl>
+        <dt>観測</dt><dd>標準デモだけで追加学習しても、LR 5e-5では500〜1,000更新で元より悪化（130タスクで成功49→42）。LR 1e-5にすると2 seed合算で成功95→94・衝突なし成功74→75・衝突126→116と、ほぼ保持できた。</dd>
+        <dt>判断</dt><dd>新しいデータを混ぜる前に「標準データだけで元の性能を保持できるか」を先に確かめる。ここが通らない状態でデータを足しても、効果と忘却を切り分けられない。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">04 · 損失関数</div>
+      <h3>平均L1が良くなっても、動きは「縮んで」いる</h3>
+      <dl>
+        <dt>観測</dt><dd>validationの非正規化MAEは4.97%改善したのに、次元別の符号付き誤差はx方向 −0.014→−0.056、z方向 −0.029→−0.070と悪化。全suiteで移動量が系統的に小さくなっていた。</dd>
+        <dt>判断</dt><dd>L1の集計値だけでなく、次元別の符号付きバイアスを必ず記録する。補助損失として次元ごとの符号付き平均誤差を罰する項（<code>masked_action_signed_bias_loss</code>）を実装して比較した。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">05 · 多峰性</div>
+      <h3>ほぼ同じ入力に異なる教師があると、L1 headは中間を出す</h3>
+      <dl>
+        <dt>観測</dt><dd>75.7万の学習入力のうち、指示が同じで画像・proprioがほぼ同一なのに教師Actionが0.05以上異なる別エピソードのペアが12,737組あった。その32組だけを200更新繰り返し学習しても、2つの教師を出し分けられたのは0組。予測は2つの教師の間に留まった。</dd>
+        <dt>判断</dt><dd>L1 headは条件付き中央値しか表現できない。分岐点の教師を揃えるか、diffusion headを独立に比較するべき問題で、「L1で多峰性に対応できている」とは言えない。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">06 · 評価の解釈</div>
+      <h3>衝突フラグの原因は、受動的な再生で確かめる</h3>
+      <dl>
+        <dt>観測</dt><dd>4タスクで衝突が多発し、モデルが物にぶつかっていると考えた。同じ初期状態でロボットを動かさない対照と比べると、衝突フラグ27件はすべて、開始0.05〜0.10秒に<b>ドレッシングの瓶が<span class="nw">約1.03mm</span>沈み込む</b>物理の初期化によるものだった。ロボットからの接触は0件。</dd>
+        <dt>判断</dt><dd>評価開始前にゼロActionで10ステップ待機してから判定する手順に切り替えた。衝突を減らす学習を始める前に原因を確認していなければ、存在しない問題を学習で解こうとしていた。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">07 · 指標の選び方</div>
+      <h3>validation lossの上昇は、成功率の低下を意味しない（逆も）</h3>
+      <dl>
+        <dt>観測</dt><dd>ある追加SFTでは固定validationのlossが32%上昇した。一方、validation lossが下がり続けていたのに、シミュレータでの成功率は元のモデルを下回るrunもあった（知見01）。</dd>
+        <dt>判断</dt><dd>lossはモデル選定の最後の指標にする。優先順位は 衝突なし成功 → 成功 → 衝突 → validation loss → ステップ数・滑らかさ。途中のcheckpointは削除せず残す。</dd>
+      </dl>
+    </article>
+
+    <article class="card lesson">
+      <div class="lesson__n">08 · 実験管理</div>
+      <h3>主要な変更は1回に1つ。悪化した実験も消さない</h3>
+      <dl>
+        <dt>観測</dt><dd>データ源の除外・比率の半減・更新数100/200/500・学習率の比較を1つずつ行った結果、どれも元のモデルを再現性高く上回れないことが分かり、問題が「データの量」ではなく「推論時のAction縮小」にあると絞り込めた。</dd>
+        <dt>判断</dt><dd>実験ごとに仮説・起点のcheckpoint・データ版・seed・結果・採否と理由を残す。棄却した実験も残すことで、同じ失敗を条件不明のまま繰り返さずに済んだ。</dd>
+      </dl>
+    </article>
+
+  </div>
+
+  <h2 class="head">図で見る</h2>
+  <figure>
+    <img src="materials/near_inputs.webp" alt="ほぼ同じ観測（front/wrist画像）に対して、異なる教師Actionが付いている2組の例" loading="lazy">
+    <figcaption>知見05：ほぼ同じ観測なのに、別エピソードでは異なる教師Actionが付いている例。</figcaption>
+  </figure>
+  <figure>
+    <img src="materials/near_pair_predictions.webp" alt="32組を200更新学習した後の予測。2つの教師の間で同じ値を出しており、出し分けられていない" loading="lazy">
+    <figcaption>知見05：該当ペアを200更新繰り返し学習した後の予測。予測A・Bはほぼ重なり、どちらの教師にも寄っていない。</figcaption>
+  </figure>
+  <figure>
+    <img src="materials/collision_passive.webp" alt="モデルのActionを再生した場合と、腕を動かさない場合で、ドレッシングの瓶の鉛直変位が同じように約1.03mm上昇する" loading="lazy">
+    <figcaption>知見06：モデルのActionを再生した場合（青）と腕を動かさない場合（橙）で、変位の推移が完全に一致。衝突判定の原因はロボットではなかった。</figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ コード -->
+<section class="section" id="view-code" hidden>
+  <p class="eyebrow">CODE</p>
+  <h1 class="page-title">リポジトリに入れたコード</h1>
+  <p class="lead">
+    実際の学習パイプラインから、外部環境なしで読めて・テストできる部分を抜粋しています。
+    学習データ・学習済み重み・LIBERO 本体は含みません。
+  </p>
+  <div class="table-wrap codemap">
+    <table>
+      <thead><tr><th>ファイル</th><th>内容</th><th>関連</th></tr></thead>
+      <tbody>
+        <tr><td><code>policy/openvla_oft/preprocessing.py</code></td><td>カメラ画像の180°回転とリサイズ。学習と推論で共有</td><td><a href="#model">モデル</a></td></tr>
+        <tr><td><code>policy/openvla_oft/action_execution.py</code></td><td>8本予測のうち先頭k本だけ実行して再観測するラッパ</td><td><a href="#model">モデル</a></td></tr>
+        <tr><td><code>policy/openvla_oft/action_history.py</code></td><td>直前3 Actionの履歴入力。ゼロ初期化分岐でproprioトークンへ加算</td><td><a href="#model">モデル</a></td></tr>
+        <tr><td><code>policy/openvla_oft/normalization_binding.py</code></td><td>LoRAで包んだモデルの内側へ正規化統計を確実に渡す</td><td><a href="#model">モデル</a></td></tr>
+        <tr><td><code>training/action_loss.py</code></td><td>mask付きL1と、次元別の符号付きバイアス損失</td><td><a href="#lessons">知見02・04</a></td></tr>
+        <tr><td><code>evaluation/proxy_score.py</code><br><code>evaluation/sparc.py</code></td><td>ステップ数・jerk・SPARC・経路長・回転量の計測と、重み範囲つきの品質スコア</td><td><a href="#data">データ</a></td></tr>
+        <tr><td><code>evaluation/trajectory_quality_gate.py</code></td><td>最悪重みでも改善する軌道改変だけを採用する判定</td><td><a href="#data">データ</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <pre><code>pip install -e ".[test]"
+pytest</code></pre>
+</section>
+
+</main>
+
+
+<div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
